@@ -8,5 +8,13 @@
 			"path": "smd soldering"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"files.associations": {
+			"*.sqlbook": "sql",
+			"*.ndjson": "jsonl",
+			"*.dbclient-js": "javascript",
+			"*.m": "matlab",
+			"cmath": "cpp"
+		}
+	}
 }

@@ -1,10 +1,19 @@
 
 #include <Arduino.h>
-#include <thermistor.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_ST7735.h>
+#include <TFT_ILI9163C.h>
 #include <SPI.h>
 #include <Wire.h>
+
+// Color definitions
+#define BLACK 0x0000
+#define BLUE 0x001F
+#define RED 0xF800
+#define GREEN 0x07E0
+#define CYAN 0x07FF
+#define MAGENTA 0xF81F
+#define YELLOW 0xFFE0
+#define WHITE 0xFFFF
 
 // Definición de pines para la pantalla TFT
 #define TFT_CS 10
@@ -12,226 +21,71 @@
 #define TFT_DC 8
 #define TFT_SCLK 13
 #define TFT_MOSI 11
+#define T0 298.15 // [K]
+#define E 2.71828 // [#]
 
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+// PINs
+#define PIN_button 6
+#define PIN_ssr 3
+#define PIN_thermistor A7
+#define PIN_fan 2
+#define PIN_led1 A0
+#define PIN_led2 A1
 
-// Variables
-volatile float measure_temp = 0.00;
-volatile float measure_resistance = 0.00;
+// Parámetros del NTC
+#define BETA 3950       // Coeficiente Beta
+#define R_NTC_25 100000 // Resistencia del NTC a 25°C
+#define R_PULLUP 4700   // 4.7kΩ
+
+TFT_ILI9163C tft = TFT_ILI9163C(TFT_CS, TFT_DC, TFT_RST);
+
+// Temperature variables
+double Setpoint;
+volatile float measured_temp = 0;
+volatile float measured_resistance = 0;
 volatile int adc_raw = 0;
 
-// Inputs/Outputs
-int button = 3;
-int ssr = 6;
-int thermistor_pin = A7;
-int fan = 2;
-int led1 = A0;
-int led2 = A1;
-
-unsigned int millis_before, millis_before_2;
-unsigned int millis_now = 0;
-float refresh_rate = 500;
-float pid_refres_rate = 50;
-float seconds = 0;
-int running_mode = 0;
-int selected_mode = 0;
-int max_modes = 3;
-float temperatura = 0;
-float preheat_setoint = 140;
-float soak_setpoint = 150;
-float reflow_setpoint = 200;
-float temp_setpoint = 0;
-float pwm_value = 255;
-float min_pid_value = 0;
-float max_pid_value = 180;
-float cooldown_temp = 40;
-bool button_state = true;
-
-float Kp = 2;      // Mine was 2
-float Ki = 0.0025; // Mine was 0.0025
-float Kd = 9;      // Mine was 9
-float PID_Output = 0;
-float PID_P, PID_I, PID_D;
-float PID_ERROR, PREV_ERROR;
-
-thermistor therm(A7, 0);
+void SetTitle();
+void MeasureTemp();
 
 void setup()
 {
-  pinMode(ssr, OUTPUT);
-  digitalWrite(ssr, HIGH);
-  pinMode(fan, OUTPUT);
-  pinMode(led1, OUTPUT);
-  pinMode(led2, OUTPUT);
-  pinMode(button, INPUT_PULLUP);
-  pinMode(thermistor_pin, INPUT);
-  Serial.begin(9600);
+  pinMode(PIN_button, INPUT);
+  pinMode(PIN_ssr, OUTPUT);
+  pinMode(PIN_fan, OUTPUT);
+  pinMode(PIN_led1, OUTPUT);
+  pinMode(PIN_led2, OUTPUT);
+  pinMode(PIN_button, INPUT_PULLUP);
+  digitalWrite(PIN_button, HIGH);
 
   SPI.begin();
-  tft.initR(INITR_144GREENTAB);
-  tft.fillScreen(ST7735_BLACK);
-  tft.setTextColor(ST7735_WHITE);
-  tft.setTextSize(1);
+  tft.begin();
 
-  tft.setCursor(10, 10);
-  tft.println("SMD Soldering");
-  Serial.println("Sistema de soldadura SMD iniciado");
-
-  millis_before = millis();
-  millis_now = millis();
+  SetTitle();
+  delay(5000);
+  tft.fillScreen(BLACK);
 }
 
 void loop()
 {
-  millis_now = millis();
-  if (millis_now - millis_before_2 > pid_refres_rate)
-  {
-    millis_before_2 = millis_now;
+}
 
-    temperatura = therm.analog2temp();
+void SetTitle()
+{
+  tft.fillScreen(BLACK);
+  tft.setTextColor(WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(20, 20);
+  tft.print("SMD");
+  tft.setCursor(20, 50);
+  tft.print("Soldering");
+}
 
-    if (running_mode == 1)
-    {
-      if (temperatura < preheat_setoint)
-      {
-        temp_setpoint = seconds * 1.666;
-      }
-      if (temperatura > preheat_setoint && seconds < 90)
-      {
-        temp_setpoint = soak_setpoint;
-      }
-      else if (seconds > 90 && seconds < 110)
-      {
-        temp_setpoint = reflow_setpoint;
-      }
-
-      // PID
-      PID_ERROR = temp_setpoint - temperatura;
-      PID_P = Kp * PID_ERROR;
-      PID_I = PID_I + (Ki * PID_ERROR);
-      PID_D = Kd * (PID_ERROR - PREV_ERROR);
-      PID_Output = PID_P + PID_I + PID_D;
-
-      if (PID_Output > max_pid_value)
-        PID_Output = max_pid_value;
-      else if (PID_Output < min_pid_value)
-        PID_Output = min_pid_value;
-
-      pwm_value = 255 - PID_Output;
-      analogWrite(ssr, pwm_value);
-      PREV_ERROR = PID_ERROR;
-
-      if (seconds > 130)
-      {
-        digitalWrite(ssr, HIGH);
-        running_mode = 10; // Pasar a modo cooldown
-      }
-    }
-
-    if (running_mode == 10)
-    {
-      tft.fillScreen(ST7735_BLACK);
-      tft.setCursor(10, 50);
-      tft.println("   Completado   ");
-      Serial.println("Proceso completado");
-
-      seconds = 0;
-      running_mode = 11;
-      delay(3000);
-    }
-  }
-  // Refresco de pantalla TFT
-  if (millis_now - millis_before > refresh_rate)
-  {
-    millis_before = millis();
-    seconds += (refresh_rate / 1000);
-
-    tft.fillScreen(ST7735_BLACK); // Borrar la pantalla
-
-    Serial.print("T: ");
-    Serial.print(temperatura, 1);
-    Serial.print("°C | ");
-
-    if (running_mode == 0)
-    {
-      digitalWrite(ssr, HIGH);
-      tft.setCursor(10, 10);
-      tft.print("T: ");
-      tft.print(temperatura, 1);
-      tft.setCursor(10, 30);
-      tft.print("SSR OFF");
-      tft.setCursor(10, 50);
-      tft.print("Presiona para iniciar");
-
-      Serial.println("Modo inactivo - Presiona botón para iniciar");
-    }
-    else if (running_mode == 11)
-    {
-      if (temperatura < cooldown_temp)
-      {
-        running_mode = 0;
-      }
-      digitalWrite(ssr, HIGH);
-      tft.setCursor(10, 10);
-      tft.print("T: ");
-      tft.print(temperatura, 1);
-      tft.setCursor(10, 30);
-      tft.print("SSR OFF");
-      tft.setCursor(10, 50);
-      tft.print("    COOLDOWN    ");
-
-      Serial.println("Modo cooldown...");
-    }
-    else if (running_mode == 1)
-    {
-      tft.setCursor(10, 10);
-      tft.print("T: ");
-      tft.print(temperatura, 1);
-      tft.setCursor(10, 30);
-      tft.print("SSR ON");
-      tft.setCursor(10, 50);
-      tft.print("S");
-      tft.print(temp_setpoint, 0);
-      tft.setCursor(10, 70);
-      tft.print("PWM: ");
-      tft.print(pwm_value, 0);
-      tft.setCursor(10, 90);
-      tft.print("Tiempo: ");
-      tft.print(seconds, 0);
-      tft.print("s");
-
-      Serial.print("Setpoint: ");
-      Serial.print(temp_setpoint, 0);
-      Serial.print("°C | PWM: ");
-      Serial.print(pwm_value, 0);
-      Serial.print(" | Tiempo: ");
-      Serial.print(seconds, 0);
-      Serial.println("s");
-    }
-  }
-
-  // Detección del único botón
-  if (digitalRead(button) && !button_state)
-  {
-    button_state = true;
-
-    if (running_mode == 1)
-    {
-      // Si está corriendo, cancela el proceso
-      digitalWrite(ssr, HIGH);
-      running_mode = 0;
-      Serial.println("Proceso cancelado.");
-    }
-    else if (running_mode == 0)
-    {
-      // Si está apagado, inicia el proceso
-      running_mode = 1;
-      seconds = 0;
-      Serial.println("Proceso iniciado.");
-    }
-  }
-  else if (!digitalRead(button) && button_state)
-  {
-    button_state = false;
-  }
+void MeasureTemp()
+{
+  adc_raw = analogRead(PIN_thermistor);
+  // Calcular la resistencia del NTC
+  measured_resistance = R_PULLUP / ((1023.00 / adc_raw) - 1);
+  // Aplicar ecuación de Steinhart-Hart
+  measured_temp = BETA / log(measured_resistance / (R_NTC_25 * pow(E, -BETA / T0))) - 273.15;
 }
