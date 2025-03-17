@@ -6,7 +6,10 @@ bin-release/
 
 # Other files and folders
 .settings/
-.vscode
+# Ignore vscode folder
+.vscode/
+
+
 # Executables
 *.swf
 *.air
