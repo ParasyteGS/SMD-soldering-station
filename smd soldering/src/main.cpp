@@ -1,31 +1,14 @@
 
 #include <Arduino.h>
-#include <Adafruit_GFX.h>
-#include <TFT_ILI9163C.h>
-#include <SPI.h>
 #include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <PID_v1.h>
 
-// Color definitions
-#define BLACK 0x0000
-#define BLUE 0x001F
-#define RED 0xF800
-#define GREEN 0x07E0
-#define CYAN 0x07FF
-#define MAGENTA 0xF81F
-#define YELLOW 0xFFE0
-#define WHITE 0xFFFF
-
-// Definición de pines para la pantalla TFT
-#define TFT_CS 10
-#define TFT_RST 9
-#define TFT_DC 8
-#define TFT_SCLK 13
-#define TFT_MOSI 11
 #define T0 298.15 // [K]
 #define E 2.71828 // [#]
 
 // PINs
-#define PIN_button 6
+#define PIN_switch 6
 #define PIN_ssr 3
 #define PIN_thermistor A7
 #define PIN_fan 2
@@ -37,48 +20,193 @@
 #define R_NTC_25 100000 // Resistencia del NTC a 25°C
 #define R_PULLUP 4700   // 4.7kΩ
 
-TFT_ILI9163C tft = TFT_ILI9163C(TFT_CS, TFT_DC, TFT_RST);
+LiquidCrystal_I2C lcd(0x3F, 16, 2);
 
 // Temperature variables
-double Setpoint;
+
 volatile float measured_temp = 0;
 volatile float measured_resistance = 0;
 volatile int adc_raw = 0;
 
-void SetTitle();
-void MeasureTemp();
+// PID Varibles
 
+double Setpoint, Input, Output;
+double Kp = 2, Ki = 0.0025, Kd = 9;
+PID PidSSR(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+
+unsigned long startTime;
+int etapa = 0;
+
+static bool wasOn = false;
+
+void MeasureTemp();
+void ledsVentilador_State_temperatura();
+void ViewTemp_States();
+void Switch_on_off();
+void ViewTemp_States();
+void AjustarSetpoint();
 void setup()
 {
-  pinMode(PIN_button, INPUT);
+  pinMode(PIN_switch, INPUT);
   pinMode(PIN_ssr, OUTPUT);
   pinMode(PIN_fan, OUTPUT);
   pinMode(PIN_led1, OUTPUT);
   pinMode(PIN_led2, OUTPUT);
-  pinMode(PIN_button, INPUT_PULLUP);
-  digitalWrite(PIN_button, HIGH);
+  pinMode(PIN_switch, INPUT_PULLUP);
+  digitalWrite(PIN_ssr, LOW);
+  digitalWrite(PIN_fan, LOW);
+  digitalWrite(PIN_led1, LOW);
+  digitalWrite(PIN_led2, LOW);
+  digitalWrite(PIN_switch, HIGH);
 
-  SPI.begin();
-  tft.begin();
+  Setpoint = 150;
+  PidSSR.SetMode(AUTOMATIC);
+  PidSSR.SetOutputLimits(0, 255);
 
-  SetTitle();
-  delay(5000);
-  tft.fillScreen(BLACK);
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SMD Soldering");
+
+  delay(2000);
 }
 
 void loop()
 {
+
+  MeasureTemp();
+  Input = measured_temp;
+  ViewTemp_States();
+  Switch_on_off();
+  delay(100);
 }
 
-void SetTitle()
+void Switch_on_off()
 {
-  tft.fillScreen(BLACK);
-  tft.setTextColor(WHITE);
-  tft.setTextSize(2);
-  tft.setCursor(20, 20);
-  tft.print("SMD");
-  tft.setCursor(20, 50);
-  tft.print("Soldering");
+  if (digitalRead(PIN_switch) == LOW)
+  {
+    if (!wasOn)
+    {
+      startTime = millis();
+      wasOn = true;
+    }
+
+    AjustarSetpoint();
+    PidSSR.Compute();
+    analogWrite(PIN_ssr, Output);
+    ledsVentilador_State_temperatura();
+  }
+  else
+  {
+    digitalWrite(PIN_ssr, LOW);
+    digitalWrite(PIN_led1, LOW);
+    digitalWrite(PIN_led2, LOW);
+
+    if (measured_temp >= 30)
+    {
+      digitalWrite(PIN_fan, HIGH);
+      etapa = 4;
+    }
+    else
+    {
+      digitalWrite(PIN_fan, LOW);
+      etapa = 0;
+    }
+    Output = 0;
+    wasOn = false;
+  }
+}
+
+void AjustarSetpoint()
+{
+  unsigned long elapsed = (millis() - startTime) / 1000;
+
+  if (elapsed < 90)
+  {
+    Setpoint = map(elapsed, 0, 90, measured_temp, 150);
+    etapa = 1;
+  }
+
+  else if (elapsed < 150)
+  {
+    Setpoint = 180;
+    etapa = 2;
+  }
+
+  else if (elapsed < 180)
+  {
+    Setpoint = map(elapsed, 150, 180, 180, 240);
+    etapa = 3;
+  }
+
+  else
+  {
+    Setpoint = 25;
+    etapa = 4;
+  }
+}
+
+void ledsVentilador_State_temperatura()
+{
+  if (measured_temp >= 30)
+  {
+    digitalWrite(PIN_led1, HIGH);
+  }
+  else
+  {
+    digitalWrite(PIN_led1, LOW);
+  }
+
+  if (etapa == 4)
+  {
+    digitalWrite(PIN_led2, HIGH);
+    digitalWrite(PIN_fan, HIGH);
+  }
+  else
+  {
+    digitalWrite(PIN_led2, LOW);
+  }
+}
+
+void ViewTemp_States()
+{
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("T: ");
+  lcd.print(measured_temp);
+  lcd.print("C");
+
+  lcd.setCursor(9, 0);
+  lcd.print("S: ");
+  lcd.print(Setpoint);
+  lcd.print("C");
+
+  if (etapa == 0)
+  {
+    lcd.setCursor(0, 1);
+    lcd.print("Wait");
+  }
+  else if (etapa == 1)
+  {
+    lcd.setCursor(0, 1);
+    lcd.print("Hot");
+  }
+  else if (etapa == 2)
+  {
+    lcd.setCursor(0, 1);
+    lcd.print("Soak");
+  }
+  else if (etapa == 3)
+  {
+    lcd.setCursor(0, 1);
+    lcd.print("Reflow");
+  }
+  else if (etapa == 4)
+  {
+    lcd.setCursor(0, 1);
+    lcd.print("CoolDown");
+  }
 }
 
 void MeasureTemp()
